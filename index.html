@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barcode Page Check</title>
+<style>
+  :root {
+    --bg: #1f2937;
+    --fg: #f9fafb;
+    --muted: rgba(255, 255, 255, 0.75);
+    --ok: #16a34a;
+    --bad: #dc2626;
+    --busy: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    transition: background-color 0.2s;
+  }
+  body.ok { background: var(--ok); }
+  body.bad { background: var(--bad); }
+  body.busy { background: var(--busy); }
+  body.dragging { box-shadow: inset 0 0 0 12px rgba(255, 255, 255, 0.5); }
+  main { max-width: 900px; width: 100%; }
+  #icon { font-size: clamp(120px, 30vw, 280px); line-height: 1; font-weight: 700; }
+  #title { font-size: clamp(22px, 4vw, 36px); font-weight: 600; margin: 16px 0 8px; }
+  #detail { color: var(--muted); font-size: 16px; line-height: 1.5; white-space: pre-line; }
+  #raw {
+    margin-top: 20px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 10px 12px;
+    border-radius: 6px;
+    word-break: break-all;
+    white-space: pre-wrap;
+    text-align: left;
+  }
+  #raw:empty { display: none; }
+  #raw mark { background: rgba(255, 255, 255, 0.9); color: #000; border-radius: 2px; padding: 0 2px; }
+  #pick { margin-top: 24px; color: var(--muted); font-size: 14px; }
+  #pick label { text-decoration: underline; cursor: pointer; }
+  #file { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div id="icon">⬇</div>
+  <div id="title">Drop a PDF anywhere</div>
+  <div id="detail">The PDF417 barcode on the last page is checked for page N of N.
+Everything runs locally in your browser.</div>
+  <div id="raw"></div>
+  <div id="pick"><label for="file">or choose a file</label><input id="file" type="file" accept="application/pdf,.pdf"></div>
+</main>
+
+<script src="vendor/pdf.min.js"></script>
+<!-- Loading the worker as a plain script lets pdf.js run in the main thread, so the page also works from file:// -->
+<script src="vendor/pdf.worker.min.js"></script>
+<script src="vendor/zxing.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
+
+  const $ = (id) => document.getElementById(id);
+
+  function show(state, icon, title, detail, rawHtml) {
+    document.body.className = state;
+    $("icon").textContent = icon;
+    $("title").textContent = title;
+    $("detail").textContent = detail || "";
+    $("raw").innerHTML = rawHtml || "";
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  }
+
+  // Barcode example:
+  //   1061087120926446271026   7000000071002002108712POSTET  2710202610   1793114379236
+  // The page field is the 3+3 digits (page, total) followed by 6 more digits, right before the letter code ("POSTET").
+  function parsePageField(text) {
+    const m = /(\d{3})(\d{3})(\d{6})(?=[A-Z]{2,})/.exec(text);
+    if (!m) return null;
+    return { page: parseInt(m[1], 10), total: parseInt(m[2], 10), index: m.index, length: 6, raw: m[1] + m[2] };
+  }
+
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.PDF_417]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+  function decodeCanvas(canvas) {
+    const reader = new ZXing.PDF417Reader();
+    const source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+    for (const Binarizer of [ZXing.HybridBinarizer, ZXing.GlobalHistogramBinarizer]) {
+      try {
+        return reader.decode(new ZXing.BinaryBitmap(new Binarizer(source)), hints).getText();
+      } catch (e) { /* try next */ }
+    }
+    return null;
+  }
+
+  function crop(src, x, y, w, h) {
+    const c = document.createElement("canvas");
+    c.width = Math.round(w * src.width);
+    c.height = Math.round(h * src.height);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(src, Math.round(x * src.width), Math.round(y * src.height), c.width, c.height, 0, 0, c.width, c.height);
+    return c;
+  }
+
+  async function renderPage(page, targetWidth) {
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: targetWidth / base.width });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    return canvas;
+  }
+
+  async function readBarcode(page) {
+    // Barcode sits top-left: try that region first, then widen. Several resolutions help thin or blurry codes.
+    const regions = [
+      [0, 0, 0.5, 0.3],
+      [0, 0, 1, 0.5],
+      [0, 0, 1, 1],
+    ];
+    for (const width of [2500, 1700, 3400]) {
+      const canvas = await renderPage(page, width);
+      for (const [x, y, w, h] of regions) {
+        const text = decodeCanvas(crop(canvas, x, y, w, h));
+        if (text) return text;
+      }
+    }
+    return null;
+  }
+
+  async function check(file) {
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
+      show("bad", "✗", "Not a PDF", file.name);
+      return;
+    }
+    show("busy", "…", "Checking", file.name);
+    try {
+      const data = new Uint8Array(await file.arrayBuffer());
+      const pdf = await pdfjsLib.getDocument({ data }).promise;
+      const page = await pdf.getPage(pdf.numPages);
+      const text = await readBarcode(page);
+      if (!text) {
+        show("bad", "✗", "No barcode found on the last page", `${file.name}\nPDF has ${pdf.numPages} page(s).`);
+        return;
+      }
+      const field = parsePageField(text);
+      if (!field) {
+        show("bad", "✗", "Page numbers not found in barcode", `${file.name}\nPDF has ${pdf.numPages} page(s).`, escapeHtml(text));
+        return;
+      }
+      const highlighted =
+        escapeHtml(text.slice(0, field.index)) +
+        "<mark>" + escapeHtml(field.raw) + "</mark>" +
+        escapeHtml(text.slice(field.index + field.length));
+      const ok = field.total > 0 && field.page === field.total;
+      const pagesNote = field.total === pdf.numPages ? "" : `\nNote: the PDF itself has ${pdf.numPages} page(s).`;
+      show(
+        ok ? "ok" : "bad",
+        ok ? "✓" : "✗",
+        ok ? `Correct: page ${field.page} of ${field.total}` : `Wrong: last page says ${field.page} of ${field.total}`,
+        file.name + pagesNote,
+        highlighted
+      );
+    } catch (e) {
+      console.error(e);
+      show("bad", "✗", "Could not read this PDF", `${file.name}\n${e.message || e}`);
+    }
+  }
+
+  // Drop anywhere on the page.
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; document.body.classList.add("dragging"); });
+  window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove("dragging");
+    check(e.dataTransfer.files[0]);
+  });
+  $("file").addEventListener("change", (e) => { check(e.target.files[0]); e.target.value = ""; });
+
+  // Exposed for testing.
+  window.parsePageField = parsePageField;
+  window.checkFile = check;
+</script>
+</body>
+</html>
