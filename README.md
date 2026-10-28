@@ -6,11 +6,12 @@ Local-only page that shows and decodes the PDF417 barcode on **every page** of a
 
 Open `index.html` in a browser (double-click works, no server needed) and drop a PDF anywhere on the page:
 
-- each page gets a card with the barcode image, the decoded text (page field highlighted), and the printed vs. barcode page number
-- green ✓ — every page is right: barcode and printed number both say page *i* of *N* (e.g. `002005` and `2/5`)
-- red ✗ — at least one page has a mismatch, a missing barcode, or a missing printed number
+- each page gets a card with the barcode image, the decoded text (page field highlighted), the printed page number, and the expected vs. actual code
+- green ✓ — every page's barcode code matches its printed number `n/a`: `00n000` on every page except the last, `00n00a` on the last page (n = a)
+  - e.g. 1/1 → `001001`; 1/2 → `001000`, 2/2 → `002002`
+- red ✗ — at least one page has the wrong code, no barcode, or no printed number
 
-Printed numbers are read from the PDF's text; for scanned PDFs without text, only the barcodes are checked.
+Printed numbers are read from the PDF's text; for scanned PDFs without text, the page order in the PDF is used instead.
 
-The page field is the 6 digits (3 for page, 3 for total) located 6 digits before the letter code (`POSTET`) in the barcode data.
+The page field is the 6 digits (3 for page, 3 for total or `000`) located 6 digits before the letter code (`POSTET`) in the barcode data.
 Nothing is uploaded; PDF rendering (pdf.js 3.11.174) and barcode decoding (@zxing/library 0.21.3) are vendored in `vendor/`.
