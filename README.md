@@ -2,7 +2,7 @@
 
 Local-only page that checks whether the PDF417 barcode on the **last page** of a PDF says "page N of N".
 
-**Live:** https://sam-apostel.github.io/barcode417-check/
+**Live:** https://butra.github.io/barcode417-check/
 
 Open `index.html` in a browser (double-click works, no server needed) and drop a PDF anywhere on the page:
 
