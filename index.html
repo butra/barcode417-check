@@ -100,11 +100,22 @@ Everything runs locally in your browser.</div>
 
   // Barcode example:
   //   1061087120926446271026   7000000071002002108712POSTET  2710202610   1793114379236
-  // The page field is the 3+3 digits (page, then total on the last page or 000 on other pages) followed by 6 more digits, right before the letter code ("POSTET").
+  //                                      ^^^^^^ characters 36-41 (counting from 1)
+  // The page field is 3 digits for the page and 3 for the total (000 on every page but the last),
+  // at a fixed position from the start of the barcode text.
+  const PAGE_FIELD_START = 35; // 0-based index of the first page-field character
+  const PAGE_FIELD_LENGTH = 6;
+
   function parsePageField(text) {
-    const m = /(\d{3})(\d{3})(\d{6})(?=[A-Z]{2,})/.exec(text);
-    if (!m) return null;
-    return { page: parseInt(m[1], 10), total: parseInt(m[2], 10), index: m.index, length: 6, raw: m[1] + m[2] };
+    const raw = text.substr(PAGE_FIELD_START, PAGE_FIELD_LENGTH);
+    if (!/^\d{6}$/.test(raw)) return null;
+    return {
+      page: parseInt(raw.slice(0, 3), 10),
+      total: parseInt(raw.slice(3), 10),
+      index: PAGE_FIELD_START,
+      length: PAGE_FIELD_LENGTH,
+      raw,
+    };
   }
 
   // Finds a printed "N/M" page number in the bottom part of the page (lowest one wins).
@@ -226,7 +237,7 @@ Everything runs locally in your browser.</div>
     const expected = expectedCode(source.page, source.total);
     const issues = [];
     if (!barcode) issues.push("No barcode found");
-    else if (!field) issues.push("Page code not found in barcode");
+    else if (!field) issues.push(`Characters ${PAGE_FIELD_START + 1}-${PAGE_FIELD_START + PAGE_FIELD_LENGTH} of the barcode are not 6 digits`);
     else if (field.raw !== expected)
       issues.push(`Barcode code is ${field.raw}, expected ${expected} for page ${fmt(source)}`);
     return { index, barcode, field, printed, expected, issues, ok: issues.length === 0 };
