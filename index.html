@@ -12,54 +12,69 @@
     --ok: #16a34a;
     --bad: #dc2626;
     --busy: #2563eb;
+    --card: rgba(0, 0, 0, 0.22);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; }
+  html, body { margin: 0; min-height: 100%; }
   body {
     background: var(--bg);
     color: var(--fg);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    min-height: 100vh;
     text-align: center;
     padding: 16px;
     transition: background-color 0.2s;
   }
+  body.has-results { justify-content: flex-start; }
   body.ok { background: var(--ok); }
   body.bad { background: var(--bad); }
   body.busy { background: var(--busy); }
   body.dragging { box-shadow: inset 0 0 0 12px rgba(255, 255, 255, 0.5); }
   main { max-width: 900px; width: 100%; }
   #icon { font-size: clamp(120px, 30vw, 280px); line-height: 1; font-weight: 700; }
+  body.has-results #icon { font-size: clamp(64px, 14vw, 120px); }
   #title { font-size: clamp(22px, 4vw, 36px); font-weight: 600; margin: 16px 0 8px; }
   #detail { color: var(--muted); font-size: 16px; line-height: 1.5; white-space: pre-line; }
-  #raw {
-    margin-top: 20px;
+  #pick { margin-top: 24px; color: var(--muted); font-size: 14px; }
+  #pick label { text-decoration: underline; cursor: pointer; }
+  #file { display: none; }
+
+  #pages { margin-top: 24px; display: grid; gap: 16px; text-align: left; }
+  #pages:empty { display: none; }
+  .page { background: var(--card); border-radius: 10px; padding: 14px 16px; border-left: 8px solid transparent; }
+  .page.ok { border-left-color: #4ade80; }
+  .page.bad { border-left-color: #fca5a5; }
+  .page.busy { border-left-color: rgba(255, 255, 255, 0.4); }
+  .page h2 { margin: 0 0 6px; font-size: 18px; display: flex; gap: 10px; align-items: baseline; }
+  .page .numbers { color: var(--muted); font-size: 15px; }
+  .page .numbers b { color: var(--fg); }
+  .page .issues { margin: 8px 0 0; padding-left: 20px; font-size: 15px; }
+  .page .barcode { display: block; margin-top: 10px; max-width: 100%; height: auto; background: #fff; border-radius: 4px; }
+  .page .raw {
+    margin-top: 10px;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 13px;
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(0, 0, 0, 0.25);
     padding: 10px 12px;
     border-radius: 6px;
     word-break: break-all;
     white-space: pre-wrap;
-    text-align: left;
   }
-  #raw:empty { display: none; }
-  #raw mark { background: rgba(255, 255, 255, 0.9); color: #000; border-radius: 2px; padding: 0 2px; }
-  #pick { margin-top: 24px; color: var(--muted); font-size: 14px; }
-  #pick label { text-decoration: underline; cursor: pointer; }
-  #file { display: none; }
+  .page .raw mark { background: rgba(255, 255, 255, 0.9); color: #000; border-radius: 2px; padding: 0 2px; }
 </style>
 </head>
 <body>
 <main>
   <div id="icon">⬇</div>
   <div id="title">Drop a PDF anywhere</div>
-  <div id="detail">The PDF417 barcode on the last page is checked for page N of N.
+  <div id="detail">Every page's PDF417 barcode is shown and decoded, and checked against the page number printed at the bottom (e.g. 2/5).
 Everything runs locally in your browser.</div>
-  <div id="raw"></div>
   <div id="pick"><label for="file">or choose a file</label><input id="file" type="file" accept="application/pdf,.pdf"></div>
+  <div id="pages"></div>
 </main>
 
 <script src="vendor/pdf.min.js"></script>
@@ -71,12 +86,12 @@ Everything runs locally in your browser.</div>
 
   const $ = (id) => document.getElementById(id);
 
-  function show(state, icon, title, detail, rawHtml) {
-    document.body.className = state;
+  function show(state, icon, title, detail) {
+    document.body.classList.remove("ok", "bad", "busy");
+    if (state) document.body.classList.add(state);
     $("icon").textContent = icon;
     $("title").textContent = title;
     $("detail").textContent = detail || "";
-    $("raw").innerHTML = rawHtml || "";
   }
 
   function escapeHtml(s) {
@@ -92,6 +107,29 @@ Everything runs locally in your browser.</div>
     return { page: parseInt(m[1], 10), total: parseInt(m[2], 10), index: m.index, length: 6, raw: m[1] + m[2] };
   }
 
+  // Finds a printed "N/M" page number in the bottom part of the page (lowest one wins).
+  // Only works when the PDF has real text; scanned pages have none.
+  async function readPrintedNumber(page) {
+    const viewport = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const lines = [];
+    for (const item of content.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+      if (y < viewport.height * 0.75) continue;
+      let line = lines.find((l) => Math.abs(l.y - y) < 4);
+      if (!line) lines.push((line = { y, parts: [] }));
+      line.parts.push({ x, str: item.str });
+    }
+    lines.sort((a, b) => b.y - a.y);
+    for (const line of lines) {
+      const text = line.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(" ");
+      const m = /(?<![\d/])(\d{1,3})\s*\/\s*(\d{1,3})(?![\d/])/.exec(text);
+      if (m) return { page: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+    }
+    return null;
+  }
+
   const hints = new Map();
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.PDF_417]);
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
@@ -101,21 +139,39 @@ Everything runs locally in your browser.</div>
     const source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
     for (const Binarizer of [ZXing.HybridBinarizer, ZXing.GlobalHistogramBinarizer]) {
       try {
-        return reader.decode(new ZXing.BinaryBitmap(new Binarizer(source)), hints).getText();
+        return reader.decode(new ZXing.BinaryBitmap(new Binarizer(source)), hints);
       } catch (e) { /* try next */ }
     }
     return null;
   }
 
-  function crop(src, x, y, w, h) {
+  function cropPx(src, x, y, w, h) {
     const c = document.createElement("canvas");
-    c.width = Math.round(w * src.width);
-    c.height = Math.round(h * src.height);
+    c.width = Math.max(1, Math.round(w));
+    c.height = Math.max(1, Math.round(h));
     const ctx = c.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, c.width, c.height);
-    ctx.drawImage(src, Math.round(x * src.width), Math.round(y * src.height), c.width, c.height, 0, 0, c.width, c.height);
+    ctx.drawImage(src, Math.round(x), Math.round(y), c.width, c.height, 0, 0, c.width, c.height);
     return c;
+  }
+
+  function crop(src, x, y, w, h) {
+    return cropPx(src, x * src.width, y * src.height, w * src.width, h * src.height);
+  }
+
+  // Cuts the barcode itself out of the region it was found in, using the corner points ZXing reports.
+  function barcodeImage(canvas, points) {
+    if (!points || !points.length) return canvas;
+    const xs = points.map((p) => p.getX());
+    const ys = points.map((p) => p.getY());
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const padX = Math.max(20, (x1 - x0) * 0.04);
+    const padY = Math.max(20, (y1 - y0) * 0.15);
+    const left = Math.max(0, x0 - padX), top = Math.max(0, y0 - padY);
+    const right = Math.min(canvas.width, x1 + padX), bottom = Math.min(canvas.height, y1 + padY);
+    if (right - left < 10 || bottom - top < 10) return canvas;
+    return cropPx(canvas, left, top, right - left, bottom - top);
   }
 
   async function renderPage(page, targetWidth) {
@@ -141,15 +197,86 @@ Everything runs locally in your browser.</div>
     for (const width of [2500, 1700, 3400]) {
       const canvas = await renderPage(page, width);
       for (const [x, y, w, h] of regions) {
-        const text = decodeCanvas(crop(canvas, x, y, w, h));
-        if (text) return text;
+        const region = crop(canvas, x, y, w, h);
+        const result = decodeCanvas(region);
+        if (result) return { text: result.getText(), image: barcodeImage(region, result.getResultPoints()) };
       }
     }
     return null;
   }
 
+  function fmt(n) {
+    return n ? `${n.page}/${n.total}` : "—";
+  }
+
+  // Checks one page against its position in the PDF and its printed number.
+  async function checkPage(pdf, index) {
+    const page = await pdf.getPage(index);
+    const expected = { page: index, total: pdf.numPages };
+    const [barcode, printed] = await Promise.all([readBarcode(page), readPrintedNumber(page).catch(() => null)]);
+    const field = barcode ? parsePageField(barcode.text) : null;
+    const issues = [];
+    if (!barcode) issues.push("No barcode found");
+    else if (!field) issues.push("Page numbers not found in barcode");
+    else if (field.page !== expected.page || field.total !== expected.total)
+      issues.push(`Barcode says ${fmt(field)}, but this is page ${fmt(expected)} of the PDF`);
+    if (printed && (printed.page !== expected.page || printed.total !== expected.total))
+      issues.push(`Printed number is ${fmt(printed)}, but this is page ${fmt(expected)} of the PDF`);
+    if (printed && field && (printed.page !== field.page || printed.total !== field.total))
+      issues.push(`Barcode (${fmt(field)}) does not match printed number (${fmt(printed)})`);
+    return { index, barcode, field, printed, issues: [...new Set(issues)], ok: issues.length === 0 };
+  }
+
+  function renderCard(card, r) {
+    card.className = "page " + (r.ok ? "ok" : "bad");
+    card.innerHTML = "";
+    const h = document.createElement("h2");
+    h.textContent = `${r.ok ? "✓" : "✗"} Page ${r.index}`;
+    card.append(h);
+
+    const numbers = document.createElement("div");
+    numbers.className = "numbers";
+    numbers.innerHTML =
+      `Printed: <b>${r.printed ? fmt(r.printed) : "not found"}</b> · ` +
+      `Barcode: <b>${r.field ? fmt(r.field) : "—"}</b>`;
+    card.append(numbers);
+
+    if (r.issues.length) {
+      const ul = document.createElement("ul");
+      ul.className = "issues";
+      for (const issue of r.issues) {
+        const li = document.createElement("li");
+        li.textContent = issue;
+        ul.append(li);
+      }
+      card.append(ul);
+    }
+
+    if (r.barcode) {
+      const img = document.createElement("img");
+      img.className = "barcode";
+      img.alt = `Barcode on page ${r.index}`;
+      img.src = r.barcode.image.toDataURL("image/png");
+      card.append(img);
+
+      const raw = document.createElement("div");
+      raw.className = "raw";
+      const text = r.barcode.text;
+      raw.innerHTML = r.field
+        ? escapeHtml(text.slice(0, r.field.index)) + "<mark>" + escapeHtml(r.field.raw) + "</mark>" +
+          escapeHtml(text.slice(r.field.index + r.field.length))
+        : escapeHtml(text);
+      card.append(raw);
+    }
+  }
+
+  let runId = 0;
+
   async function check(file) {
     if (!file) return;
+    const run = ++runId;
+    $("pages").innerHTML = "";
+    document.body.classList.remove("has-results");
     if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
       show("bad", "✗", "Not a PDF", file.name);
       return;
@@ -158,33 +285,43 @@ Everything runs locally in your browser.</div>
     try {
       const data = new Uint8Array(await file.arrayBuffer());
       const pdf = await pdfjsLib.getDocument({ data }).promise;
-      const page = await pdf.getPage(pdf.numPages);
-      const text = await readBarcode(page);
-      if (!text) {
-        show("bad", "✗", "No barcode found on the last page", `${file.name}\nPDF has ${pdf.numPages} page(s).`);
-        return;
+      document.body.classList.add("has-results");
+      const cards = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const card = document.createElement("section");
+        card.className = "page busy";
+        card.innerHTML = `<h2>… Page ${i}</h2>`;
+        $("pages").append(card);
+        cards.push(card);
       }
-      const field = parsePageField(text);
-      if (!field) {
-        show("bad", "✗", "Page numbers not found in barcode", `${file.name}\nPDF has ${pdf.numPages} page(s).`, escapeHtml(text));
-        return;
+      const results = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        if (run !== runId) return;
+        show("busy", "…", `Checking page ${i} of ${pdf.numPages}`, file.name);
+        const r = await checkPage(pdf, i);
+        if (run !== runId) return;
+        results.push(r);
+        renderCard(cards[i - 1], r);
       }
-      const highlighted =
-        escapeHtml(text.slice(0, field.index)) +
-        "<mark>" + escapeHtml(field.raw) + "</mark>" +
-        escapeHtml(text.slice(field.index + field.length));
-      const ok = field.total > 0 && field.page === field.total;
-      const pagesNote = field.total === pdf.numPages ? "" : `\nNote: the PDF itself has ${pdf.numPages} page(s).`;
-      show(
-        ok ? "ok" : "bad",
-        ok ? "✓" : "✗",
-        ok ? `Correct: page ${field.page} of ${field.total}` : `Wrong: last page says ${field.page} of ${field.total}`,
-        file.name + pagesNote,
-        highlighted
-      );
+      // A missing printed number only counts as wrong when other pages do have one (scanned PDFs have no text at all).
+      const noPrinted = results.filter((r) => !r.printed).length;
+      if (noPrinted && noPrinted < results.length) {
+        for (const r of results.filter((r) => !r.printed)) {
+          r.issues.push("No printed page number found at the bottom");
+          r.ok = false;
+          renderCard(cards[r.index - 1], r);
+        }
+      }
+      const bad = results.filter((r) => !r.ok).length;
+      const note = noPrinted === results.length ? "\nNo printed page numbers found in this PDF, so only the barcodes were checked." : "";
+      if (bad === 0) {
+        show("ok", "✓", `All ${pdf.numPages} page(s) correct`, file.name + note);
+      } else {
+        show("bad", "✗", `${bad} of ${pdf.numPages} page(s) wrong`, file.name + note);
+      }
     } catch (e) {
       console.error(e);
-      show("bad", "✗", "Could not read this PDF", `${file.name}\n${e.message || e}`);
+      if (run === runId) show("bad", "✗", "Could not read this PDF", `${file.name}\n${e.message || e}`);
     }
   }
 
