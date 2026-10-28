@@ -71,7 +71,7 @@
 <main>
   <div id="icon">⬇</div>
   <div id="title">Drop a PDF anywhere</div>
-  <div id="detail">Every page's PDF417 barcode is shown and decoded, and checked against the page number printed at the bottom (e.g. 2/5).
+  <div id="detail">Every page's PDF417 barcode is shown and decoded, and checked against the page number printed at the bottom: page n of a needs code 00n000, the last page (n = a) 00n00a.
 Everything runs locally in your browser.</div>
   <div id="pick"><label for="file">or choose a file</label><input id="file" type="file" accept="application/pdf,.pdf"></div>
   <div id="pages"></div>
@@ -100,7 +100,7 @@ Everything runs locally in your browser.</div>
 
   // Barcode example:
   //   1061087120926446271026   7000000071002002108712POSTET  2710202610   1793114379236
-  // The page field is the 3+3 digits (page, total) followed by 6 more digits, right before the letter code ("POSTET").
+  // The page field is the 3+3 digits (page, then total on the last page or 000 on other pages) followed by 6 more digits, right before the letter code ("POSTET").
   function parsePageField(text) {
     const m = /(\d{3})(\d{3})(\d{6})(?=[A-Z]{2,})/.exec(text);
     if (!m) return null;
@@ -209,22 +209,27 @@ Everything runs locally in your browser.</div>
     return n ? `${n.page}/${n.total}` : "—";
   }
 
-  // Checks one page against its position in the PDF and its printed number.
+  const pad3 = (n) => String(n).padStart(3, "0");
+
+  // Code the barcode should hold for printed page n of a: "00n00a" on the last page (n = a), "00n000" on every other page.
+  function expectedCode(n, a) {
+    return pad3(n) + (n === a ? pad3(a) : "000");
+  }
+
+  // Checks one page's barcode against the page number printed at its bottom.
+  // Without a printed number (e.g. a scanned PDF), the page's position in the PDF is used instead.
   async function checkPage(pdf, index) {
     const page = await pdf.getPage(index);
-    const expected = { page: index, total: pdf.numPages };
     const [barcode, printed] = await Promise.all([readBarcode(page), readPrintedNumber(page).catch(() => null)]);
     const field = barcode ? parsePageField(barcode.text) : null;
+    const source = printed || { page: index, total: pdf.numPages };
+    const expected = expectedCode(source.page, source.total);
     const issues = [];
     if (!barcode) issues.push("No barcode found");
-    else if (!field) issues.push("Page numbers not found in barcode");
-    else if (field.page !== expected.page || field.total !== expected.total)
-      issues.push(`Barcode says ${fmt(field)}, but this is page ${fmt(expected)} of the PDF`);
-    if (printed && (printed.page !== expected.page || printed.total !== expected.total))
-      issues.push(`Printed number is ${fmt(printed)}, but this is page ${fmt(expected)} of the PDF`);
-    if (printed && field && (printed.page !== field.page || printed.total !== field.total))
-      issues.push(`Barcode (${fmt(field)}) does not match printed number (${fmt(printed)})`);
-    return { index, barcode, field, printed, issues: [...new Set(issues)], ok: issues.length === 0 };
+    else if (!field) issues.push("Page code not found in barcode");
+    else if (field.raw !== expected)
+      issues.push(`Barcode code is ${field.raw}, expected ${expected} for page ${fmt(source)}`);
+    return { index, barcode, field, printed, expected, issues, ok: issues.length === 0 };
   }
 
   function renderCard(card, r) {
@@ -238,7 +243,8 @@ Everything runs locally in your browser.</div>
     numbers.className = "numbers";
     numbers.innerHTML =
       `Printed: <b>${r.printed ? fmt(r.printed) : "not found"}</b> · ` +
-      `Barcode: <b>${r.field ? fmt(r.field) : "—"}</b>`;
+      `Expected: <b>${r.expected}</b> · ` +
+      `Barcode: <b>${r.field ? r.field.raw : "—"}</b>`;
     card.append(numbers);
 
     if (r.issues.length) {
@@ -313,7 +319,7 @@ Everything runs locally in your browser.</div>
         }
       }
       const bad = results.filter((r) => !r.ok).length;
-      const note = noPrinted === results.length ? "\nNo printed page numbers found in this PDF, so only the barcodes were checked." : "";
+      const note = noPrinted === results.length ? "\nNo printed page numbers found in this PDF, so the page order in the PDF was used instead." : "";
       if (bad === 0) {
         show("ok", "✓", `All ${pdf.numPages} page(s) correct`, file.name + note);
       } else {
