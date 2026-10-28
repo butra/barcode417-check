@@ -13,5 +13,5 @@ Open `index.html` in a browser (double-click works, no server needed) and drop a
 
 Printed numbers are read from the PDF's text; for scanned PDFs without text, the page order in the PDF is used instead.
 
-The page field is 6 digits at a fixed position: characters 57–62 of the barcode text, counting from 1 (3 digits for the page, then 3 for the total or `000`). Change `PAGE_FIELD_START` in `index.html` if that position ever moves.
+The page field is 6 digits at a fixed position: characters 56–61 of the barcode text, counting from 1 (3 digits for the page, then 3 for the total or `000`). Change `PAGE_FIELD_START` in `index.html` if that position ever moves.
 Nothing is uploaded; PDF rendering (pdf.js 3.11.174) and barcode decoding (@zxing/library 0.21.3) are vendored in `vendor/`.

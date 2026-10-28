@@ -99,8 +99,8 @@ Everything runs locally in your browser.</div>
   }
 
   // The page field is 3 digits for the page and 3 for the total (000 on every page but the last),
-  // at a fixed position from the start of the barcode text: characters 57-62 (counting from 1).
-  const PAGE_FIELD_START = 56; // 0-based index of the first page-field character
+  // at a fixed position from the start of the barcode text: characters 56-61 (counting from 1).
+  const PAGE_FIELD_START = 55; // 0-based index of the first page-field character
   const PAGE_FIELD_LENGTH = 6;
 
   function parsePageField(text) {
